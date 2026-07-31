@@ -150,7 +150,7 @@ async function audit(url) {
     .filter(r => r.url.startsWith('http') && r.duration > 0)
     .map(r => ({
       url: r.url,
-      type: r.initiatorType || 'other',
+      type: inferType(r.url, r.initiatorType),
       duration: Math.round(r.duration),
       size: r.transferSize > 0 ? r.transferSize : (r.encodedBodySize > 0 ? r.encodedBodySize : null),
     }));
@@ -162,6 +162,8 @@ async function audit(url) {
   // ponytail: naive eTLD+1 via last 2 labels — breaks on .co.uk etc.
   // Swap to `tldts` if false positives hurt.
   const mainReg = new URL(url).hostname.split('.').slice(-2).join('.');
+  // Group by hostname (per-subdomain granularity for debugging — devs want to see
+  // each clarity.ms subdomain's cost separately, not collapsed into one row).
   const byHost = new Map();
   for (const r of resources) {
     let host;
@@ -189,6 +191,24 @@ async function audit(url) {
 const fmtBytes = n => !n ? '—' : n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(2) + ' MB';
 const fmtMs = n => n ? Math.round(n) + 'ms' : '—';
 const fmtCls = n => (n === null || n === undefined) ? '—' : n.toFixed(3);
+const shortType = t => t === 'xmlhttprequest' ? 'xhr' : t;
+
+// initiatorType from PerformanceResourceTiming tells us WHO fetched the asset
+// (`link`, `css`, `script`) — not WHAT it is. Devs care about the resource kind.
+// Infer from URL extension; fall back to initiatorType.
+function inferType(url, initiatorType) {
+  let path = '';
+  try { path = new URL(url).pathname.toLowerCase(); } catch { return initiatorType || 'other'; }
+  if (/\.(woff2?|ttf|otf|eot)$/.test(path)) return 'font';
+  if (/\.(jpe?g|png|gif|webp|avif|svg|bmp|ico)$/.test(path)) return 'img';
+  if (/\.(mp4|webm|mov|m4v|ogv)$/.test(path)) return 'video';
+  if (/\.(mp3|wav|ogg|m4a|flac)$/.test(path)) return 'audio';
+  if (/\.css$/.test(path)) return 'css';
+  if (/\.(js|mjs|cjs)$/.test(path)) return 'script';
+  if (/\.(json|xml)$/.test(path)) return 'data';
+  if (/\.(html?|php)$/.test(path)) return 'doc';
+  return initiatorType || 'other';
+}
 
 function toTable(r, prev) {
   const L = [];
@@ -206,12 +226,13 @@ function toTable(r, prev) {
         diff = d === 0 ? ' =' : d > 0 ? ` ▲+${d}ms` : ` ▼${d}ms`;
       }
     }
-    L.push(`  ${fmtMs(a.duration).padStart(7)}  ${fmtBytes(a.size).padStart(9)}  ${a.type.padEnd(10)}  ${a.url.slice(0, 50)}${diff}`);
+    L.push(`  ${fmtMs(a.duration).padStart(7)}  ${fmtBytes(a.size).padStart(9)}  ${shortType(a.type).padEnd(8)}  ${a.url}${diff}`);
   }
   L.push('\n3RD PARTY (by total duration)');
   L.push('─'.repeat(90));
   for (const t of r.thirdParty.slice(0, 15)) {
-    L.push(`  ${fmtMs(t.totalDuration).padStart(7)}  ${String(t.requests).padStart(3)} req  ${t.category.padEnd(14)}  ${t.entity}`);
+    const label = t.entity === t.host ? t.host : `${t.host}  (${t.entity})`;
+    L.push(`  ${fmtMs(t.totalDuration).padStart(7)}  ${String(t.requests).padStart(3)} req  ${t.category.padEnd(14)}  ${label}`);
   }
   L.push('\nTECH STACK');
   L.push('─'.repeat(90));
@@ -228,8 +249,8 @@ function toMarkdown(r) {
   md.push(`| Duration | Size | Type | URL |\n|---:|---:|---|---|`);
   for (const a of r.assets) md.push(`| ${fmtMs(a.duration)} | ${fmtBytes(a.size)} | ${a.type} | \`${a.url}\` |`);
   md.push(`\n## 3rd party (by total duration)\n`);
-  md.push(`| Total | Requests | Category | Entity |\n|---:|---:|---|---|`);
-  for (const t of r.thirdParty.slice(0, 20)) md.push(`| ${fmtMs(t.totalDuration)} | ${t.requests} | ${t.category} | ${t.entity} |`);
+  md.push(`| Total | Requests | Category | Host | Entity |\n|---:|---:|---|---|---|`);
+  for (const t of r.thirdParty.slice(0, 20)) md.push(`| ${fmtMs(t.totalDuration)} | ${t.requests} | ${t.category} | \`${t.host}\` | ${t.entity} |`);
   md.push(`\n## Tech stack\n`);
   md.push(r.tech.map(t => `- ${t}`).join('\n') || '_none detected_');
   return md.join('\n');
@@ -257,8 +278,8 @@ code{font:12px monospace;word-break:break-all}
 ${r.assets.map(a => `<tr><td class="num">${fmtMs(a.duration)}</td><td class="num">${fmtBytes(a.size)}</td><td>${esc(a.type)}</td><td><code>${esc(a.url)}</code></td></tr>`).join('')}
 </table>
 <h2>3rd party (by total duration)</h2>
-<table><tr><th>Total</th><th>Requests</th><th>Category</th><th>Entity</th></tr>
-${r.thirdParty.slice(0, 20).map(t => `<tr><td class="num">${fmtMs(t.totalDuration)}</td><td class="num">${t.requests}</td><td>${esc(t.category)}</td><td>${esc(t.entity)}</td></tr>`).join('')}
+<table><tr><th>Total</th><th>Requests</th><th>Category</th><th>Host</th><th>Entity</th></tr>
+${r.thirdParty.slice(0, 20).map(t => `<tr><td class="num">${fmtMs(t.totalDuration)}</td><td class="num">${t.requests}</td><td>${esc(t.category)}</td><td><code>${esc(t.host)}</code></td><td>${esc(t.entity)}</td></tr>`).join('')}
 </table>
 <h2>Tech stack</h2>
 <div>${r.tech.map(t => `<span class="badge">${esc(t)}</span>`).join('') || '<em>none detected</em>'}</div>
