@@ -303,36 +303,212 @@ function toMarkdown(r) {
 
 function toHTML(r) {
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  return `<!doctype html><html><head><meta charset="utf-8"><title>pageaudit ${esc(r.url)}</title>
+  const vitalCard = (label, value) => `
+        <div class="stat-card">
+          <div class="stat-label">${esc(label)}</div>
+          <div class="stat-value">${esc(value)}</div>
+        </div>`;
+  const vitals = [
+    ['Load', fmtMs(r.loadMs)],
+    ['TTFB', fmtMs(r.vitals.ttfb)],
+    ['FCP',  fmtMs(r.vitals.fcp)],
+    ['LCP',  fmtMs(r.vitals.lcp)],
+    ['CLS',  fmtCls(r.vitals.cls)],
+  ];
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pageaudit — ${esc(r.url)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-body{font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:960px;margin:2em auto;padding:0 1em;color:#222}
-h1{font-size:1.4em}h2{margin-top:2em;border-bottom:1px solid #ddd;padding-bottom:.3em}
-table{width:100%;border-collapse:collapse;margin:1em 0}
-th,td{text-align:left;padding:.4em .6em;border-bottom:1px solid #eee;font-size:.9em}
-th{background:#f6f8fa}
-.num{text-align:right;font-variant-numeric:tabular-nums}
-.badge{display:inline-block;padding:.2em .5em;margin:.15em;background:#eef;border-radius:3px;font-size:.85em}
-code{font:12px monospace;word-break:break-all}
-@media(prefers-color-scheme:dark){body{background:#111;color:#ddd}th{background:#222}td,th{border-color:#333}.badge{background:#223}}
-</style></head><body>
-<h1>pageaudit — ${esc(r.url)}</h1>
-<p><strong>Ran:</strong> ${fmtTime(r.timestamp)}<br>
-<strong>Load:</strong> ${fmtMs(r.loadMs)} • <strong>TTFB:</strong> ${fmtMs(r.vitals.ttfb)} • <strong>FCP:</strong> ${fmtMs(r.vitals.fcp)} • <strong>LCP:</strong> ${fmtMs(r.vitals.lcp)} • <strong>CLS:</strong> ${fmtCls(r.vitals.cls)}</p>
-<h2>By type</h2>
-<table><tr><th>Type</th><th>Files</th><th>Total size</th><th>Avg duration</th><th>Total duration</th></tr>
-${r.assetsByType.map(t => `<tr><td>${esc(t.type)}</td><td class="num">${t.count}</td><td class="num">${fmtBytes(t.totalSize)}</td><td class="num">${fmtMs(t.avgDuration)}</td><td class="num">${fmtMs(t.totalDuration)}</td></tr>`).join('')}
-</table>
-<h2>Heavy assets (top ${r.assets.length} by duration)</h2>
-<table><tr><th>Duration</th><th>Size</th><th>Type</th><th>URL</th></tr>
-${r.assets.map(a => `<tr><td class="num">${fmtMs(a.duration)}</td><td class="num">${fmtBytes(a.size)}</td><td>${esc(a.type)}</td><td><code>${esc(a.url)}</code></td></tr>`).join('')}
-</table>
-<h2>3rd party (by total duration)</h2>
-<table><tr><th>Total</th><th>Requests</th><th>Category</th><th>Host</th><th>Entity</th></tr>
-${r.thirdParty.map(t => `<tr><td class="num">${fmtMs(t.totalDuration)}</td><td class="num">${t.requests}</td><td>${esc(t.category)}</td><td><code>${esc(t.host)}</code></td><td>${esc(t.entity)}</td></tr>`).join('')}
-</table>
-<h2>Tech stack</h2>
-<div>${r.tech.map(t => `<span class="badge">${esc(t)}</span>`).join('') || '<em>none detected</em>'}</div>
-</body></html>`;
+  :root {
+    --primary: #4a154b;
+    --primary-press: #611f69;
+    --primary-tint: #592466;
+    --link-blue: #1264a3;
+    --link-hover: #3860be;
+    --canvas: #ffffff;
+    --canvas-cream: #f4ede4;
+    --canvas-lavender: #f9f0ff;
+    --hairline: #e6e6e6;
+    --ink: #1d1d1d;
+    --ink-mute: #696969;
+    --on-primary: #ffffff;
+    --on-aubergine-mute: #d9bdde;
+    --rounded-md: 8px;
+    --rounded-lg: 12px;
+    --rounded-xl: 16px;
+    --rounded-pill: 90px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink);
+    background: var(--canvas);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  a { color: var(--link-blue); text-decoration: none; }
+  a:hover { color: var(--link-hover); text-decoration: underline; }
+
+  .hero { background: var(--primary); color: var(--on-primary); padding: 56px 24px 48px; }
+  .hero-inner, .vitals-grid, .container-inner, .footer-inner { max-width: 1240px; margin: 0 auto; }
+  .hero-eyebrow { font-size: 12px; font-weight: 700; line-height: 1; letter-spacing: 0.96px; text-transform: uppercase; color: var(--on-aubergine-mute); margin-bottom: 16px; }
+  .hero-title { font-size: 58px; font-weight: 600; line-height: 1.25; letter-spacing: -0.464px; margin: 0 0 12px; word-break: break-word; }
+  .hero-title a { color: var(--on-primary); text-decoration: none; }
+  .hero-title a:hover { color: var(--on-aubergine-mute); text-decoration: underline; }
+  .hero-meta { font-size: 14px; line-height: 1.43; letter-spacing: 0.1px; color: var(--on-aubergine-mute); font-variant-numeric: tabular-nums; }
+
+  .vitals-band { background: var(--canvas-cream); padding: 32px 24px; }
+  .vitals-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; }
+  .stat-card { background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--rounded-xl); padding: 20px 24px; }
+  .stat-label { font-size: 12px; font-weight: 700; line-height: 1; letter-spacing: 0.96px; text-transform: uppercase; color: var(--ink-mute); }
+  .stat-value { font-size: 32px; font-weight: 700; line-height: 1.12; letter-spacing: -0.256px; color: var(--primary); margin-top: 8px; font-variant-numeric: tabular-nums; }
+
+  main { padding: 48px 24px 64px; }
+  section { margin-bottom: 40px; }
+  section:last-of-type { margin-bottom: 0; }
+  .h2-row { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  h2 { font-size: 32px; font-weight: 700; line-height: 1.25; letter-spacing: -0.256px; color: var(--ink); margin: 0; }
+  .count { font-size: 14px; color: var(--ink-mute); font-variant-numeric: tabular-nums; }
+
+  .card { background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--rounded-xl); overflow: hidden; }
+  .card-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 12px 20px; border-bottom: 1px solid var(--hairline); vertical-align: top; line-height: 1.43; }
+  tr:last-child td { border-bottom: none; }
+  th { font-size: 12px; font-weight: 700; line-height: 1; letter-spacing: 0.96px; text-transform: uppercase; color: var(--ink-mute); background: var(--canvas-lavender); white-space: nowrap; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+  .badge { display: inline-block; padding: 8px 20px; border: 2px solid var(--primary); color: var(--primary); border-radius: var(--rounded-pill); font-size: 14.4px; font-weight: 700; line-height: 1; letter-spacing: 0.144px; background: var(--canvas); }
+  .empty { color: var(--ink-mute); font-size: 14px; font-style: italic; padding: 12px; }
+
+  footer.bottom { background: var(--primary); color: var(--on-primary); padding: 40px 24px 32px; }
+  .footer-inner { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px; }
+  .footer-brand { font-size: 22px; font-weight: 700; line-height: 1.33; letter-spacing: -0.02em; }
+  .footer-meta { font-size: 14px; line-height: 1.43; letter-spacing: 0.1px; color: var(--on-aubergine-mute); font-variant-numeric: tabular-nums; }
+  footer.bottom a { color: var(--on-primary); text-decoration: underline; }
+  footer.bottom a:hover { color: var(--on-aubergine-mute); }
+
+  @media (max-width: 992px) {
+    .vitals-grid { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (max-width: 768px) {
+    .hero { padding: 40px 16px 32px; }
+    .hero-title { font-size: 32px; letter-spacing: -0.256px; }
+    h2 { font-size: 24px; letter-spacing: -0.192px; }
+    .vitals-band { padding: 24px 16px; }
+    .vitals-grid { grid-template-columns: repeat(2, 1fr); }
+    .stat-value { font-size: 28px; }
+    main { padding: 32px 16px 48px; }
+    footer.bottom { padding: 32px 16px 24px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div class="hero-eyebrow">Page audit</div>
+    <h1 class="hero-title"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a></h1>
+    <div class="hero-meta">Ran ${esc(fmtTime(r.timestamp))}</div>
+  </div>
+</header>
+
+<section class="vitals-band">
+  <div class="vitals-grid">
+    ${vitals.map(([label, value]) => vitalCard(label, value)).join('')}
+  </div>
+</section>
+
+<main>
+  <div class="container-inner">
+
+    <section>
+      <div class="h2-row">
+        <h2>Assets by type</h2>
+        <span class="count">${r.assetsByType.length} types</span>
+      </div>
+      <div class="card card-scroll"><table>
+        <thead><tr><th>Type</th><th class="num">Files</th><th class="num">Total size</th><th class="num">Avg</th><th class="num">Total</th></tr></thead>
+        <tbody>
+          ${r.assetsByType.map(t => `<tr>
+            <td>${esc(t.type)}</td>
+            <td class="num">${t.count}</td>
+            <td class="num">${fmtBytes(t.totalSize)}</td>
+            <td class="num">${fmtMs(t.avgDuration)}</td>
+            <td class="num">${fmtMs(t.totalDuration)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>
+    </section>
+
+    <section>
+      <div class="h2-row">
+        <h2>Slowest ${r.assets.length} assets</h2>
+        <span class="count">by duration</span>
+      </div>
+      <div class="card card-scroll"><table>
+        <thead><tr><th class="num">Duration</th><th class="num">Size</th><th>Type</th><th>URL</th></tr></thead>
+        <tbody>
+          ${r.assets.map(a => `<tr>
+            <td class="num">${fmtMs(a.duration)}</td>
+            <td class="num">${fmtBytes(a.size)}</td>
+            <td>${esc(a.type)}</td>
+            <td class="mono"><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.url)}</a></td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>
+    </section>
+
+    <section>
+      <div class="h2-row">
+        <h2>Third parties</h2>
+        <span class="count">${r.thirdParty.length} hosts</span>
+      </div>
+      <div class="card card-scroll"><table>
+        <thead><tr><th class="num">Total</th><th class="num">Req</th><th>Category</th><th>Host</th><th>Entity</th></tr></thead>
+        <tbody>
+          ${r.thirdParty.length ? r.thirdParty.map(t => `<tr>
+            <td class="num">${fmtMs(t.totalDuration)}</td>
+            <td class="num">${t.requests}</td>
+            <td>${esc(t.category)}</td>
+            <td class="mono">${esc(t.host)}</td>
+            <td>${esc(t.entity)}</td>
+          </tr>`).join('') : `<tr><td colspan="5" class="empty">None detected.</td></tr>`}
+        </tbody>
+      </table></div>
+    </section>
+
+    <section>
+      <div class="h2-row">
+        <h2>Tech stack</h2>
+        <span class="count">${r.tech.length} detected</span>
+      </div>
+      ${r.tech.length ? `<div class="badges">${r.tech.map(t => `<span class="badge">${esc(t)}</span>`).join('')}</div>` : '<div class="empty">None detected.</div>'}
+    </section>
+
+  </div>
+</main>
+
+<footer class="bottom">
+  <div class="footer-inner">
+    <div class="footer-brand">pageaudit</div>
+    <div class="footer-meta">MIT · <a href="https://github.com/leo26dandy/pageaudit" target="_blank" rel="noopener">github.com/leo26dandy/pageaudit</a></div>
+  </div>
+</footer>
+
+</body>
+</html>`;
 }
 
 // --- run ---
