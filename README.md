@@ -49,6 +49,7 @@ With flags:
 
 ```bash
 node pageaudit.js https://example.com --diff
+node pageaudit.js https://example.com --fail
 node pageaudit.js https://example.com --top 30
 node pageaudit.js https://example.com --filter font
 node pageaudit.js https://example.com --filter img,font,script
@@ -67,19 +68,19 @@ node pageaudit.js https://example.com --timeout 60000
 | `--md <file>` | Write Markdown report |
 | `--share` | Upload HTML as GitHub Gist (needs `gh auth login`) |
 | `--diff` | Show diff vs previous run for this URL |
+| `--fail` | Exit 1 if LCP or total asset duration regressed ≥10% vs previous run (CI-friendly) |
 | `--top <n>` | Show top N heavy assets and 3rd parties (default `15`) |
 | `--filter <types>` | Only show assets of given types (comma-separated): `img,font,script,css,video,audio,data,doc` |
 | `--timeout <ms>` | Page load timeout (default `30000`) |
 | `-h`, `--help` | Show help |
 
-Snapshots stored at `~/.pageaudit/snapshots.json` for `--diff`.
+Snapshots stored at `~/.pageaudit/snapshots.json` for `--diff` / `--fail`.
 
 ## Known limitations
 
-- **Cross-origin size = `-`.** Resources without `Timing-Allow-Origin: *` report `transferSize = 0` - browser-level CORS restriction, not fixable client-side.
+- **Cross-origin size = `-`.** Resources without `Timing-Allow-Origin: *` report `transferSize = 0` - browser-level CORS restriction, not fixable client-side. Assets flagged `(cors)` in the report so you can tell CORS-blocked sizes apart from genuinely missing data.
 - **No INP.** INP requires real user interaction; synthetic audits can't measure it.
 - **Tech detection ≈ 30 patterns.** Hand-picked to cover most WP/Woo/modern stacks. Narrower than Wappalyzer's 2000+ set; swap to `wappalyzer-core` if false-negatives sting.
-- **Naive eTLD+1 grouping.** Third-party grouping uses `hostname.split('.').slice(-2)` - misgroups `.co.uk`, `.com.au`, etc. Swap to `tldts` if false positives hurt.
 - **Single URL per run.** No crawl / multi-page mode yet.
 
 ## License

@@ -4,13 +4,35 @@
 
 import { chromium } from 'playwright';
 import thirdPartyWeb from 'third-party-web';
+import { getDomain } from 'tldts';
+import Wappalyzer from 'wappalyzer';
 import { parseArgs } from 'node:util';
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 
 const { getEntity } = thirdPartyWeb;
+
+import Wappalyzer from 'wappalyzer';
+const require = createRequire(import.meta.url);
+const wappalyzerPath = join(require.resolve('wappalyzer'), '..');
+const { setTechnologies, setCategories, analyze, resolve } = Wappalyzer;
+
+const categories = JSON.parse(
+  readFileSync(join(wappalyzerPath, 'categories.json'), 'utf8')
+);
+setCategories(categories);
+
+const technologies = {};
+for (const file of readdirSync(join(wappalyzerPath, 'technologies'))) {
+  const data = JSON.parse(
+    readFileSync(join(wappalyzerPath, 'technologies', file), 'utf8')
+  );
+  Object.assign(technologies, data);
+}
+setTechnologies(technologies);
 
 const { values, positionals } = parseArgs({
   options: {
@@ -22,6 +44,7 @@ const { values, positionals } = parseArgs({
     top:     { type: 'string', default: '15' },
     filter:  { type: 'string' },
     timeout: { type: 'string', default: '30000' },
+    fail:    { type: 'boolean' },
     help:    { type: 'boolean', short: 'h' },
   },
   allowPositionals: true,
@@ -35,13 +58,14 @@ if (values.help || positionals.length === 0) {
   --md <file>         write Markdown report
   --share             upload HTML as GitHub Gist (needs gh CLI, gh auth login)
   --diff              show diff vs previous run
+  --fail              exit 1 if regression found (LCP +10% or total duration +10%)
   --top <n>           show top N heavy assets and 3rd parties (default 15)
   --filter <types>    only show assets of given types, comma-separated
                       (e.g. img,font,script — see BY TYPE section for names)
   --timeout <ms>      page load timeout (default 30000)
   -h, --help          this help
 
-Snapshots stored at ~/.pageaudit/snapshots.json for --diff.
+  Snapshots stored at ~/.pageaudit/snapshots.json for --diff.
 `);
   process.exit(values.help ? 0 : 1);
 }
@@ -60,45 +84,13 @@ const snapshots = existsSync(snapshotFile)
   ? JSON.parse(readFileSync(snapshotFile, 'utf8'))
   : {};
 
-// ponytail: 30 hand-picked fingerprints cover 95% of WP/Woo/modern stacks.
-// Swap to `wappalyzer-core` if false-negatives sting.
-const techPatterns = [
-  { name: 'WordPress',           test: (h, hdr) => /wp-content|wp-includes/i.test(h) || /wordpress/i.test(hdr['x-powered-by'] || '') },
-  { name: 'Elementor',           test: (h) => /elementor/i.test(h) },
-  { name: 'WooCommerce',         test: (h) => /woocommerce/i.test(h) },
-  { name: 'Yoast SEO',           test: (h) => /yoast/i.test(h) },
-  { name: 'jQuery',              test: (h) => /jquery[.\-]/i.test(h) },
-  { name: 'Next.js',             test: (h, hdr) => /__NEXT_DATA__|_next\//.test(h) || 'x-nextjs-cache' in hdr },
-  { name: 'Nuxt.js',             test: (h) => /__NUXT__|_nuxt\//.test(h) },
-  { name: 'React',               test: (h) => /react(-dom)?[.@]/.test(h) },
-  { name: 'Vue.js',              test: (h) => /vue(\.min)?\.js|v-if=|v-for=/.test(h) },
-  { name: 'Angular',             test: (h) => /ng-app|ng-controller|@angular/.test(h) },
-  { name: 'Svelte',              test: (h) => /svelte-[a-z0-9]{6}/.test(h) },
-  { name: 'Shopify',             test: (h, hdr) => /cdn\.shopify\.com/.test(h) || /shopify/i.test(hdr['x-shopid'] || hdr['server'] || '') },
-  { name: 'Wix',                 test: (h) => /wix\.com|_wix/.test(h) },
-  { name: 'Squarespace',         test: (h) => /Static\.SQUARESPACE_CONTEXT|static1\.squarespace\.com|<meta[^>]+content="Squarespace/i.test(h) },
-  { name: 'Webflow',             test: (h) => /data-wf-page|assets\.website-files\.com|<meta[^>]+content="Webflow/i.test(h) },
-  { name: 'Ghost',               test: (h, hdr) => /ghost/i.test(hdr['x-powered-by'] || '') || /ghost-url/.test(h) },
-  { name: 'Drupal',              test: (h, hdr) => /drupal/i.test(hdr['x-generator'] || '') || /Drupal\.behaviors|\/sites\/default\/files\/|<meta[^>]+content="Drupal/i.test(h) },
-  { name: 'Joomla',              test: (h) => /<meta[^>]+content="Joomla|\/media\/jui\/|\/media\/system\/js\/|Joomla!/i.test(h) },
-  { name: 'Magento',             test: (h, hdr) => 'x-magento-tags' in hdr || 'x-magento-cache-debug' in hdr || /Mage\.Cookies|\/skin\/frontend\/|<meta[^>]+content="Magento/i.test(h) },
-  { name: 'Google Tag Manager',  test: (h) => /googletagmanager\.com\/gtm\.js/.test(h) },
-  { name: 'Google Analytics',    test: (h) => /google-analytics\.com|gtag\(/.test(h) },
-  { name: 'Meta Pixel',          test: (h) => /connect\.facebook\.net|fbq\(/.test(h) },
-  { name: 'Hotjar',              test: (h) => /static\.hotjar\.com/.test(h) },
-  { name: 'Cloudflare',          test: (_h, hdr) => /cloudflare/i.test(hdr['server'] || '') },
-  { name: 'Nginx',               test: (_h, hdr) => /nginx/i.test(hdr['server'] || '') },
-  { name: 'Apache',              test: (_h, hdr) => /apache/i.test(hdr['server'] || '') },
-  { name: 'LiteSpeed',           test: (_h, hdr) => /litespeed/i.test(hdr['server'] || '') },
-  { name: 'PHP',                 test: (_h, hdr) => /php/i.test(hdr['x-powered-by'] || '') },
-  { name: 'Bootstrap',           test: (h) => /bootstrap(\.min)?\.(css|js)/.test(h) },
-  { name: 'Tailwind CSS',        test: (h) => /cdn\.tailwindcss\.com|jsdelivr\.net\/npm\/tailwindcss|\bclass="[^"]*\b(sm|md|lg|xl):[a-z-]+/i.test(h) },
-];
-
 function detectTech(html, headers) {
-  return techPatterns
-    .filter(p => { try { return p.test(html, headers); } catch { return false; } })
-    .map(p => p.name);
+  try {
+    const detections = analyze({ html, headers });
+    return resolve(detections).map(t => t.name);
+  } catch {
+    return [];
+  }
 }
 
 async function audit(url, { topN = 15, filterTypes = null } = {}) {
@@ -106,63 +98,82 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
   const context = await browser.newContext();
   const page = await context.newPage();
 
+  // Capture headers for CORS/TAO diagnosis
+  const responseHeaders = new Map();
+  page.on('response', res => {
+    const url = res.url();
+    if (!url.startsWith('http')) return;
+    responseHeaders.set(url, res.headers());
+  });
+
   const t0 = Date.now();
   const mainResponse = await page.goto(url, { timeout, waitUntil: 'load' });
   const loadMs = Date.now() - t0;
   const mainHeaders = await mainResponse.allHeaders();
   const html = await page.content();
 
-  // Let LCP + CLS observers settle. Bounded so infinite pollers don't hang us.
-  await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
-
   // Source of truth: PerformanceResourceTiming + PerformanceObserver — Chrome DevTools' own data.
   // Cross-origin without `Timing-Allow-Origin: *` reports transferSize=0 (CORS).
   // ponytail: INP omitted — requires user interaction, N/A in synthetic runs.
-  const [vitals, perfResources] = await Promise.all([
-    page.evaluate(() => new Promise(resolve => {
-      const nav = performance.getEntriesByType('navigation')[0] || {};
-      const paint = performance.getEntriesByType('paint');
-      const out = {
-        ttfb: nav.responseStart,
-        domContentLoaded: nav.domContentLoadedEventEnd,
-        loadEvent: nav.loadEventEnd,
-        fcp: paint.find(p => p.name === 'first-contentful-paint')?.startTime,
-        lcp: null,
-        cls: 0,
-      };
-      try {
-        new PerformanceObserver(list => {
-          const entries = list.getEntries();
-          if (entries.length) out.lcp = entries[entries.length - 1].startTime;
-        }).observe({ type: 'largest-contentful-paint', buffered: true });
-        new PerformanceObserver(list => {
-          for (const e of list.getEntries()) if (!e.hadRecentInput) out.cls += e.value;
-        }).observe({ type: 'layout-shift', buffered: true });
-      } catch {}
-      setTimeout(() => {
-        out.cls = Math.round(out.cls * 1000) / 1000;
-        resolve(out);
-      }, 500);
-    })),
-    page.evaluate(() => performance.getEntriesByType('resource').map(e => ({
-      url: e.name,
-      duration: e.duration,
-      transferSize: e.transferSize,
-      encodedBodySize: e.encodedBodySize,
-      initiatorType: e.initiatorType,
-    }))),
-  ]);
+  // Let LCP + CLS observers settle. Bounded so infinite pollers don't hang us.
+  const vitals = await page.evaluate(() => new Promise(resolve => {
+    const nav = performance.getEntriesByType('navigation')[0] || {};
+    const paint = performance.getEntriesByType('paint');
+    const out = {
+      ttfb: nav.responseStart,
+      domContentLoaded: nav.domContentLoadedEventEnd,
+      loadEvent: nav.loadEventEnd,
+      fcp: paint.find(p => p.name === 'first-contentful-paint')?.startTime,
+      lcp: null,
+      cls: 0,
+    };
+    let lastActivity = Date.now();
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      out.cls = Math.round(out.cls * 1000) / 1000;
+      resolve(out);
+    };
+    const maybeSettle = () => {
+      if (Date.now() - lastActivity > 2000) done();
+    };
+    try {
+      new PerformanceObserver(list => {
+        for (const e of list.getEntries()) { out.lcp = e.startTime; lastActivity = Date.now(); }
+      }).observe({ type: 'largest-contentful-paint', buffered: true });
+      new PerformanceObserver(list => {
+        for (const e of list.getEntries()) { if (!e.hadRecentInput) { out.cls += e.value; lastActivity = Date.now(); } }
+      }).observe({ type: 'layout-shift', buffered: true });
+    } catch {}
+    const tick = setInterval(maybeSettle, 250);
+    setTimeout(() => { clearInterval(tick); done(); }, 10000);
+  }));
+  const perfResources = await page.evaluate(() => performance.getEntriesByType('resource').map(e => ({
+    url: e.name,
+    duration: e.duration,
+    transferSize: e.transferSize,
+    encodedBodySize: e.encodedBodySize,
+    initiatorType: e.initiatorType,
+  })));
 
   await browser.close();
 
   const resources = perfResources
     .filter(r => r.url.startsWith('http') && r.duration > 0)
-    .map(r => ({
-      url: r.url,
-      type: inferType(r.url, r.initiatorType),
-      duration: Math.round(r.duration),
-      size: r.transferSize > 0 ? r.transferSize : (r.encodedBodySize > 0 ? r.encodedBodySize : null),
-    }));
+    .map(r => {
+      const h = responseHeaders.get(r.url) || {};
+      const size = r.transferSize > 0 ? r.transferSize : (r.encodedBodySize > 0 ? r.encodedBodySize : null);
+      const isCors = size === null && !h['timing-allow-origin'];
+      return {
+        url: r.url,
+        type: inferType(r.url, r.initiatorType),
+        duration: Math.round(r.duration),
+        size,
+        cors: isCors,
+        contentType: h['content-type'] || null,
+      };
+    });
 
   // Aggregate all resources by type — bird's-eye view before drilling into individuals.
   const typeAgg = {};
@@ -185,9 +196,8 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
     .sort((a, b) => b.duration - a.duration)
     .slice(0, topN);
 
-  // ponytail: naive eTLD+1 via last 2 labels — breaks on .co.uk etc.
-  // Swap to `tldts` if false positives hurt.
-  const mainReg = new URL(url).hostname.split('.').slice(-2).join('.');
+  // tldts handles real eTLD+1 rules — .co.uk, .com.au, .github.io etc.
+  const mainReg = getDomain(url);
   // Group by hostname (per-subdomain granularity for debugging — devs want to see
   // each clarity.ms subdomain's cost separately, not collapsed into one row).
   const byHost = new Map();
@@ -259,6 +269,7 @@ function toTable(r, prev) {
   L.push('');
   L.push(`HEAVY ASSETS (top ${r.assets.length} by duration)`);
   L.push('─'.repeat(90));
+  let hasCors = false;
   for (const a of r.assets) {
     let diff = '';
     if (prev) {
@@ -268,8 +279,11 @@ function toTable(r, prev) {
         diff = d === 0 ? ' =' : d > 0 ? ` ▲+${d}ms` : ` ▼${d}ms`;
       }
     }
-    L.push(`  ${fmtMs(a.duration).padStart(7)}  ${fmtBytes(a.size).padStart(9)}  ${shortType(a.type).padEnd(8)}  ${a.url}${diff}`);
+    const corsMark = a.cors ? ' [cors]' : '';
+    if (a.cors) hasCors = true;
+    L.push(`  ${fmtMs(a.duration).padStart(7)}  ${fmtBytes(a.size).padStart(9)}  ${shortType(a.type).padEnd(8)}  ${a.url}${corsMark}${diff}`);
   }
+  if (hasCors) L.push('  [cors] = cross-origin, no Timing-Allow-Origin → size unknown');
   L.push('\n3RD PARTY (by total duration)');
   L.push('─'.repeat(90));
   for (const t of r.thirdParty) {
@@ -292,7 +306,7 @@ function toMarkdown(r) {
   for (const t of r.assetsByType) md.push(`| ${t.type} | ${t.count} | ${fmtBytes(t.totalSize)} | ${fmtMs(t.avgDuration)} | ${fmtMs(t.totalDuration)} |`);
   md.push(`\n## Heavy assets (top ${r.assets.length} by duration)\n`);
   md.push(`| Duration | Size | Type | URL |\n|---:|---:|---|---|`);
-  for (const a of r.assets) md.push(`| ${fmtMs(a.duration)} | ${fmtBytes(a.size)} | ${a.type} | \`${a.url}\` |`);
+  for (const a of r.assets) md.push(`| ${fmtMs(a.duration)} | ${fmtBytes(a.size)} | ${a.type} | \`${a.url}\`${a.cors ? ' _(cors — no TAO, size unknown)_' : ''} |`);
   md.push(`\n## 3rd party (by total duration)\n`);
   md.push(`| Total | Requests | Category | Host | Entity |\n|---:|---:|---|---|---|`);
   for (const t of r.thirdParty) md.push(`| ${fmtMs(t.totalDuration)} | ${t.requests} | ${t.category} | \`${t.host}\` | ${t.entity} |`);
@@ -460,12 +474,12 @@ function toHTML(r) {
       <div class="card card-scroll"><table>
         <thead><tr><th class="num">Duration</th><th class="num">Size</th><th>Type</th><th>URL</th></tr></thead>
         <tbody>
-          ${r.assets.map(a => `<tr>
-            <td class="num">${fmtMs(a.duration)}</td>
-            <td class="num">${fmtBytes(a.size)}</td>
-            <td>${esc(a.type)}</td>
-            <td class="mono"><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.url)}</a></td>
-          </tr>`).join('')}
+           ${r.assets.map(a => `<tr>
+             <td class="num">${fmtMs(a.duration)}</td>
+             <td class="num">${fmtBytes(a.size)}</td>
+             <td>${esc(a.type)}</td>
+             <td class="mono"><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.url)}</a>${a.cors ? ' <span style="color:var(--ink-mute); font-size:10px;">(cors)</span>' : ''}</td>
+           </tr>`).join('')}
         </tbody>
       </table></div>
     </section>
@@ -516,8 +530,9 @@ try {
   const prev = snapshots[targetUrl];
   const report = await audit(targetUrl, { topN, filterTypes });
 
+  const showDiff = values.diff || values.fail;
   if (values.json) console.log(JSON.stringify(report, null, 2));
-  else console.log(toTable(report, values.diff ? prev : null));
+  else console.log(toTable(report, showDiff ? prev : null));
 
   if (values.html) {
     writeFileSync(values.html, toHTML(report));
@@ -533,6 +548,26 @@ try {
     writeFileSync(tmp, toHTML(report));
     const out = execSync(`gh gist create --public --desc "pageaudit ${report.url}" ${tmp}`, { encoding: 'utf8' }).trim();
     console.error(`Shared: ${out}`);
+  }
+
+  // --fail: exit 1 on LCP or total-duration regression
+  if (values.fail) {
+    let fail = false;
+    if (prev) {
+      const prevTotal = (prev.assetsByType || []).reduce((s, t) => s + (t.totalDuration || 0), 0);
+      const nowTotal = (report.assetsByType || []).reduce((s, t) => s + (t.totalDuration || 0), 0);
+      if (report.vitals.lcp != null && prev.vitals?.lcp != null && report.vitals.lcp > prev.vitals.lcp * 1.1) {
+        console.error(`LCP regression: ${fmtMs(prev.vitals.lcp)} → ${fmtMs(report.vitals.lcp)} (+${Math.round((report.vitals.lcp / prev.vitals.lcp - 1) * 100)}%)`);
+        fail = true;
+      }
+      if (prevTotal > 0 && nowTotal > prevTotal * 1.1) {
+        console.error(`Total duration regression: ${fmtMs(prevTotal)} → ${fmtMs(nowTotal)} (+${Math.round((nowTotal / prevTotal - 1) * 100)}%)`);
+        fail = true;
+      }
+    } else {
+      console.error('--fail: no previous snapshot for this URL; baseline recorded.');
+    }
+    if (fail) process.exitCode = 1;
   }
 
   snapshots[targetUrl] = report;
