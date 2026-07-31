@@ -4,11 +4,13 @@ Local one-shot page audit CLI. See what's slow, who's tracking, what's under the
 
 ## What it shows
 
-- **Heavy assets** - top 15 by real load duration (with byte size where available).
-- **Third-party services** - grouped by host, labeled by category (analytics / ads / cdn / tag-manager / social / …), sorted by total duration.
+- **By type summary** - all assets grouped by kind (img, script, font, css, video, ...) with count, total size, average + total duration.
+- **Heavy assets** - top N by real load duration (default 15, override with `--top`). Filter to one class with `--filter`.
+- **Third-party services** - grouped by host, labeled by entity + category (analytics / ads / cdn / tag-manager / social / ...), sorted by total duration.
 - **Tech stack** - WordPress, Elementor, WooCommerce, Next.js, Nuxt, React, Vue, Shopify, Cloudflare, etc.
 - **Core Web Vitals** - TTFB, FCP, LCP, CLS. (INP omitted - requires user interaction.)
 - **Diff vs previous run** - instant regression check for the same URL.
+- **Human-readable timestamp** in your local timezone; ISO kept in JSON for machine parsing.
 
 Powered by real Chromium (Playwright), reading directly from the browser's `PerformanceResourceTiming` and `PerformanceObserver` APIs - the same source Chrome DevTools uses.
 
@@ -47,6 +49,9 @@ With flags:
 
 ```bash
 node pageaudit.js https://example.com --diff
+node pageaudit.js https://example.com --top 30
+node pageaudit.js https://example.com --filter font
+node pageaudit.js https://example.com --filter img,font,script
 node pageaudit.js https://example.com --html report.html --md report.md
 node pageaudit.js https://example.com --json | jq '.thirdParty[0:5]'
 node pageaudit.js https://example.com --share            # requires `gh` CLI
@@ -62,6 +67,8 @@ node pageaudit.js https://example.com --timeout 60000
 | `--md <file>` | Write Markdown report |
 | `--share` | Upload HTML as GitHub Gist (needs `gh auth login`) |
 | `--diff` | Show diff vs previous run for this URL |
+| `--top <n>` | Show top N heavy assets and 3rd parties (default `15`) |
+| `--filter <types>` | Only show assets of given types (comma-separated): `img,font,script,css,video,audio,data,doc` |
 | `--timeout <ms>` | Page load timeout (default `30000`) |
 | `-h`, `--help` | Show help |
 

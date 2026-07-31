@@ -19,6 +19,8 @@ const { values, positionals } = parseArgs({
     md:      { type: 'string' },
     share:   { type: 'boolean' },
     diff:    { type: 'boolean' },
+    top:     { type: 'string', default: '15' },
+    filter:  { type: 'string' },
     timeout: { type: 'string', default: '30000' },
     help:    { type: 'boolean', short: 'h' },
   },
@@ -28,13 +30,16 @@ const { values, positionals } = parseArgs({
 if (values.help || positionals.length === 0) {
   console.log(`pageaudit <url> [options]
 
-  --json           JSON to stdout
-  --html <file>    write HTML report
-  --md <file>      write Markdown report
-  --share          upload HTML as GitHub Gist (needs gh CLI, gh auth login)
-  --diff           show diff vs previous run
-  --timeout <ms>   page load timeout (default 30000)
-  -h, --help       this help
+  --json              JSON to stdout
+  --html <file>       write HTML report
+  --md <file>         write Markdown report
+  --share             upload HTML as GitHub Gist (needs gh CLI, gh auth login)
+  --diff              show diff vs previous run
+  --top <n>           show top N heavy assets and 3rd parties (default 15)
+  --filter <types>    only show assets of given types, comma-separated
+                      (e.g. img,font,script — see BY TYPE section for names)
+  --timeout <ms>      page load timeout (default 30000)
+  -h, --help          this help
 
 Snapshots stored at ~/.pageaudit/snapshots.json for --diff.
 `);
@@ -43,6 +48,10 @@ Snapshots stored at ~/.pageaudit/snapshots.json for --diff.
 
 const targetUrl = positionals[0];
 const timeout = parseInt(values.timeout, 10);
+const topN = Math.max(1, parseInt(values.top, 10) || 15);
+const filterTypes = values.filter
+  ? values.filter.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+  : null;
 
 const stateDir = join(homedir(), '.pageaudit');
 if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true });
@@ -67,12 +76,12 @@ const techPatterns = [
   { name: 'Svelte',              test: (h) => /svelte-[a-z0-9]{6}/.test(h) },
   { name: 'Shopify',             test: (h, hdr) => /cdn\.shopify\.com/.test(h) || /shopify/i.test(hdr['x-shopid'] || hdr['server'] || '') },
   { name: 'Wix',                 test: (h) => /wix\.com|_wix/.test(h) },
-  { name: 'Squarespace',         test: (h) => /squarespace/i.test(h) },
-  { name: 'Webflow',             test: (h) => /webflow/i.test(h) },
+  { name: 'Squarespace',         test: (h) => /Static\.SQUARESPACE_CONTEXT|static1\.squarespace\.com|<meta[^>]+content="Squarespace/i.test(h) },
+  { name: 'Webflow',             test: (h) => /data-wf-page|assets\.website-files\.com|<meta[^>]+content="Webflow/i.test(h) },
   { name: 'Ghost',               test: (h, hdr) => /ghost/i.test(hdr['x-powered-by'] || '') || /ghost-url/.test(h) },
-  { name: 'Drupal',              test: (h, hdr) => /drupal/i.test(hdr['x-generator'] || '') || /drupal/i.test(h) },
-  { name: 'Joomla',              test: (h) => /joomla/i.test(h) },
-  { name: 'Magento',             test: (h) => /mage-\w+|magento/i.test(h) },
+  { name: 'Drupal',              test: (h, hdr) => /drupal/i.test(hdr['x-generator'] || '') || /Drupal\.behaviors|\/sites\/default\/files\/|<meta[^>]+content="Drupal/i.test(h) },
+  { name: 'Joomla',              test: (h) => /<meta[^>]+content="Joomla|\/media\/jui\/|\/media\/system\/js\/|Joomla!/i.test(h) },
+  { name: 'Magento',             test: (h, hdr) => 'x-magento-tags' in hdr || 'x-magento-cache-debug' in hdr || /Mage\.Cookies|\/skin\/frontend\/|<meta[^>]+content="Magento/i.test(h) },
   { name: 'Google Tag Manager',  test: (h) => /googletagmanager\.com\/gtm\.js/.test(h) },
   { name: 'Google Analytics',    test: (h) => /google-analytics\.com|gtag\(/.test(h) },
   { name: 'Meta Pixel',          test: (h) => /connect\.facebook\.net|fbq\(/.test(h) },
@@ -83,7 +92,7 @@ const techPatterns = [
   { name: 'LiteSpeed',           test: (_h, hdr) => /litespeed/i.test(hdr['server'] || '') },
   { name: 'PHP',                 test: (_h, hdr) => /php/i.test(hdr['x-powered-by'] || '') },
   { name: 'Bootstrap',           test: (h) => /bootstrap(\.min)?\.(css|js)/.test(h) },
-  { name: 'Tailwind CSS',        test: (h) => /\bclass="[^"]*\b(flex|grid|text-\w+|bg-\w+|p-\d)\b/.test(h) },
+  { name: 'Tailwind CSS',        test: (h) => /cdn\.tailwindcss\.com|jsdelivr\.net\/npm\/tailwindcss|\bclass="[^"]*\b(sm|md|lg|xl):[a-z-]+/i.test(h) },
 ];
 
 function detectTech(html, headers) {
@@ -92,7 +101,7 @@ function detectTech(html, headers) {
     .map(p => p.name);
 }
 
-async function audit(url) {
+async function audit(url, { topN = 15, filterTypes = null } = {}) {
   const browser = await chromium.launch();
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -155,9 +164,26 @@ async function audit(url) {
       size: r.transferSize > 0 ? r.transferSize : (r.encodedBodySize > 0 ? r.encodedBodySize : null),
     }));
 
-  const assets = [...resources]
+  // Aggregate all resources by type — bird's-eye view before drilling into individuals.
+  const typeAgg = {};
+  for (const r of resources) {
+    if (!typeAgg[r.type]) typeAgg[r.type] = { count: 0, totalSize: 0, totalDuration: 0 };
+    typeAgg[r.type].count++;
+    typeAgg[r.type].totalSize += r.size || 0;
+    typeAgg[r.type].totalDuration += r.duration;
+  }
+  const assetsByType = Object.entries(typeAgg).map(([type, s]) => ({
+    type,
+    count: s.count,
+    totalSize: s.totalSize,
+    totalDuration: s.totalDuration,
+    avgDuration: Math.round(s.totalDuration / s.count),
+  })).sort((a, b) => b.totalDuration - a.totalDuration);
+
+  const filtered = filterTypes ? resources.filter(r => filterTypes.includes(r.type)) : resources;
+  const assets = [...filtered]
     .sort((a, b) => b.duration - a.duration)
-    .slice(0, 15);
+    .slice(0, topN);
 
   // ponytail: naive eTLD+1 via last 2 labels — breaks on .co.uk etc.
   // Swap to `tldts` if false positives hurt.
@@ -181,17 +207,27 @@ async function audit(url) {
       requests: list.length,
       totalDuration: Math.round(list.reduce((s, x) => s + x.duration, 0)),
     };
-  }).sort((a, b) => b.totalDuration - a.totalDuration);
+  }).sort((a, b) => b.totalDuration - a.totalDuration).slice(0, topN);
 
   const tech = detectTech(html, mainHeaders);
 
-  return { url, timestamp: new Date().toISOString(), loadMs, vitals, assets, thirdParty, tech };
+  return { url, timestamp: new Date().toISOString(), loadMs, vitals, assetsByType, assets, thirdParty, tech };
 }
 
 const fmtBytes = n => !n ? '—' : n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(2) + ' MB';
 const fmtMs = n => n ? Math.round(n) + 'ms' : '—';
 const fmtCls = n => (n === null || n === undefined) ? '—' : n.toFixed(3);
 const shortType = t => t === 'xmlhttprequest' ? 'xhr' : t;
+// Human-readable local time. Keeps ISO in JSON snapshots for machine parsing / diff.
+const fmtTime = iso => {
+  try {
+    return new Intl.DateTimeFormat('sv-SE', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false, timeZoneName: 'short',
+    }).format(new Date(iso));
+  } catch { return iso; }
+};
 
 // initiatorType from PerformanceResourceTiming tells us WHO fetched the asset
 // (`link`, `css`, `script`) — not WHAT it is. Devs care about the resource kind.
@@ -213,9 +249,15 @@ function inferType(url, initiatorType) {
 function toTable(r, prev) {
   const L = [];
   L.push(`\npageaudit  ${r.url}`);
-  L.push(`ran ${r.timestamp}`);
+  L.push(`ran ${fmtTime(r.timestamp)}`);
   L.push(`load ${fmtMs(r.loadMs)}   ttfb ${fmtMs(r.vitals.ttfb)}   fcp ${fmtMs(r.vitals.fcp)}   lcp ${fmtMs(r.vitals.lcp)}   cls ${fmtCls(r.vitals.cls)}\n`);
-  L.push('HEAVY ASSETS (by duration)');
+  L.push('BY TYPE');
+  L.push('─'.repeat(90));
+  for (const t of r.assetsByType) {
+    L.push(`  ${shortType(t.type).padEnd(8)}  ${String(t.count).padStart(3)} files   ${fmtBytes(t.totalSize).padStart(9)}   avg ${fmtMs(t.avgDuration).padStart(7)}   total ${fmtMs(t.totalDuration)}`);
+  }
+  L.push('');
+  L.push(`HEAVY ASSETS (top ${r.assets.length} by duration)`);
   L.push('─'.repeat(90));
   for (const a of r.assets) {
     let diff = '';
@@ -230,7 +272,7 @@ function toTable(r, prev) {
   }
   L.push('\n3RD PARTY (by total duration)');
   L.push('─'.repeat(90));
-  for (const t of r.thirdParty.slice(0, 15)) {
+  for (const t of r.thirdParty) {
     const label = t.entity === t.host ? t.host : `${t.host}  (${t.entity})`;
     L.push(`  ${fmtMs(t.totalDuration).padStart(7)}  ${String(t.requests).padStart(3)} req  ${t.category.padEnd(14)}  ${label}`);
   }
@@ -243,14 +285,17 @@ function toTable(r, prev) {
 
 function toMarkdown(r) {
   const md = [`# pageaudit — ${r.url}\n`];
-  md.push(`- **Ran:** ${r.timestamp}`);
+  md.push(`- **Ran:** ${fmtTime(r.timestamp)}`);
   md.push(`- **Load:** ${fmtMs(r.loadMs)} • **TTFB:** ${fmtMs(r.vitals.ttfb)} • **FCP:** ${fmtMs(r.vitals.fcp)} • **LCP:** ${fmtMs(r.vitals.lcp)} • **CLS:** ${fmtCls(r.vitals.cls)}\n`);
-  md.push(`## Heavy assets (by duration)\n`);
+  md.push(`## By type\n`);
+  md.push(`| Type | Files | Total size | Avg duration | Total duration |\n|---|---:|---:|---:|---:|`);
+  for (const t of r.assetsByType) md.push(`| ${t.type} | ${t.count} | ${fmtBytes(t.totalSize)} | ${fmtMs(t.avgDuration)} | ${fmtMs(t.totalDuration)} |`);
+  md.push(`\n## Heavy assets (top ${r.assets.length} by duration)\n`);
   md.push(`| Duration | Size | Type | URL |\n|---:|---:|---|---|`);
   for (const a of r.assets) md.push(`| ${fmtMs(a.duration)} | ${fmtBytes(a.size)} | ${a.type} | \`${a.url}\` |`);
   md.push(`\n## 3rd party (by total duration)\n`);
   md.push(`| Total | Requests | Category | Host | Entity |\n|---:|---:|---|---|---|`);
-  for (const t of r.thirdParty.slice(0, 20)) md.push(`| ${fmtMs(t.totalDuration)} | ${t.requests} | ${t.category} | \`${t.host}\` | ${t.entity} |`);
+  for (const t of r.thirdParty) md.push(`| ${fmtMs(t.totalDuration)} | ${t.requests} | ${t.category} | \`${t.host}\` | ${t.entity} |`);
   md.push(`\n## Tech stack\n`);
   md.push(r.tech.map(t => `- ${t}`).join('\n') || '_none detected_');
   return md.join('\n');
@@ -271,15 +316,19 @@ code{font:12px monospace;word-break:break-all}
 @media(prefers-color-scheme:dark){body{background:#111;color:#ddd}th{background:#222}td,th{border-color:#333}.badge{background:#223}}
 </style></head><body>
 <h1>pageaudit — ${esc(r.url)}</h1>
-<p><strong>Ran:</strong> ${r.timestamp}<br>
+<p><strong>Ran:</strong> ${fmtTime(r.timestamp)}<br>
 <strong>Load:</strong> ${fmtMs(r.loadMs)} • <strong>TTFB:</strong> ${fmtMs(r.vitals.ttfb)} • <strong>FCP:</strong> ${fmtMs(r.vitals.fcp)} • <strong>LCP:</strong> ${fmtMs(r.vitals.lcp)} • <strong>CLS:</strong> ${fmtCls(r.vitals.cls)}</p>
-<h2>Heavy assets (by duration)</h2>
+<h2>By type</h2>
+<table><tr><th>Type</th><th>Files</th><th>Total size</th><th>Avg duration</th><th>Total duration</th></tr>
+${r.assetsByType.map(t => `<tr><td>${esc(t.type)}</td><td class="num">${t.count}</td><td class="num">${fmtBytes(t.totalSize)}</td><td class="num">${fmtMs(t.avgDuration)}</td><td class="num">${fmtMs(t.totalDuration)}</td></tr>`).join('')}
+</table>
+<h2>Heavy assets (top ${r.assets.length} by duration)</h2>
 <table><tr><th>Duration</th><th>Size</th><th>Type</th><th>URL</th></tr>
 ${r.assets.map(a => `<tr><td class="num">${fmtMs(a.duration)}</td><td class="num">${fmtBytes(a.size)}</td><td>${esc(a.type)}</td><td><code>${esc(a.url)}</code></td></tr>`).join('')}
 </table>
 <h2>3rd party (by total duration)</h2>
 <table><tr><th>Total</th><th>Requests</th><th>Category</th><th>Host</th><th>Entity</th></tr>
-${r.thirdParty.slice(0, 20).map(t => `<tr><td class="num">${fmtMs(t.totalDuration)}</td><td class="num">${t.requests}</td><td>${esc(t.category)}</td><td><code>${esc(t.host)}</code></td><td>${esc(t.entity)}</td></tr>`).join('')}
+${r.thirdParty.map(t => `<tr><td class="num">${fmtMs(t.totalDuration)}</td><td class="num">${t.requests}</td><td>${esc(t.category)}</td><td><code>${esc(t.host)}</code></td><td>${esc(t.entity)}</td></tr>`).join('')}
 </table>
 <h2>Tech stack</h2>
 <div>${r.tech.map(t => `<span class="badge">${esc(t)}</span>`).join('') || '<em>none detected</em>'}</div>
@@ -289,7 +338,7 @@ ${r.thirdParty.slice(0, 20).map(t => `<tr><td class="num">${fmtMs(t.totalDuratio
 // --- run ---
 try {
   const prev = snapshots[targetUrl];
-  const report = await audit(targetUrl);
+  const report = await audit(targetUrl, { topN, filterTypes });
 
   if (values.json) console.log(JSON.stringify(report, null, 2));
   else console.log(toTable(report, values.diff ? prev : null));
