@@ -1,0 +1,20 @@
+{
+  "name": "pageaudit",
+  "version": "0.1.0",
+  "description": "Local one-shot page audit: heavy assets, 3rd party, tech stack",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "pageaudit": "./pageaudit.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node pageaudit.js"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0",
+    "third-party-web": "^0.24.5"
+  }
+}
