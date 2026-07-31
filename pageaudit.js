@@ -103,19 +103,38 @@ async function audit(url) {
   const mainHeaders = await mainResponse.allHeaders();
   const html = await page.content();
 
-  // Source of truth: PerformanceResourceTiming API — same data DevTools shows.
+  // Let LCP + CLS observers settle. Bounded so infinite pollers don't hang us.
+  await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
+
+  // Source of truth: PerformanceResourceTiming + PerformanceObserver — Chrome DevTools' own data.
   // Cross-origin without `Timing-Allow-Origin: *` reports transferSize=0 (CORS).
+  // ponytail: INP omitted — requires user interaction, N/A in synthetic runs.
   const [vitals, perfResources] = await Promise.all([
-    page.evaluate(() => {
+    page.evaluate(() => new Promise(resolve => {
       const nav = performance.getEntriesByType('navigation')[0] || {};
       const paint = performance.getEntriesByType('paint');
-      return {
+      const out = {
         ttfb: nav.responseStart,
         domContentLoaded: nav.domContentLoadedEventEnd,
         loadEvent: nav.loadEventEnd,
         fcp: paint.find(p => p.name === 'first-contentful-paint')?.startTime,
+        lcp: null,
+        cls: 0,
       };
-    }),
+      try {
+        new PerformanceObserver(list => {
+          const entries = list.getEntries();
+          if (entries.length) out.lcp = entries[entries.length - 1].startTime;
+        }).observe({ type: 'largest-contentful-paint', buffered: true });
+        new PerformanceObserver(list => {
+          for (const e of list.getEntries()) if (!e.hadRecentInput) out.cls += e.value;
+        }).observe({ type: 'layout-shift', buffered: true });
+      } catch {}
+      setTimeout(() => {
+        out.cls = Math.round(out.cls * 1000) / 1000;
+        resolve(out);
+      }, 500);
+    })),
     page.evaluate(() => performance.getEntriesByType('resource').map(e => ({
       url: e.name,
       duration: e.duration,
@@ -169,11 +188,13 @@ async function audit(url) {
 
 const fmtBytes = n => !n ? '—' : n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(2) + ' MB';
 const fmtMs = n => n ? Math.round(n) + 'ms' : '—';
+const fmtCls = n => (n === null || n === undefined) ? '—' : n.toFixed(3);
 
 function toTable(r, prev) {
   const L = [];
   L.push(`\npageaudit  ${r.url}`);
-  L.push(`ran ${r.timestamp}   load ${fmtMs(r.loadMs)}   ttfb ${fmtMs(r.vitals.ttfb)}   fcp ${fmtMs(r.vitals.fcp)}\n`);
+  L.push(`ran ${r.timestamp}`);
+  L.push(`load ${fmtMs(r.loadMs)}   ttfb ${fmtMs(r.vitals.ttfb)}   fcp ${fmtMs(r.vitals.fcp)}   lcp ${fmtMs(r.vitals.lcp)}   cls ${fmtCls(r.vitals.cls)}\n`);
   L.push('HEAVY ASSETS (by duration)');
   L.push('─'.repeat(90));
   for (const a of r.assets) {
@@ -202,7 +223,7 @@ function toTable(r, prev) {
 function toMarkdown(r) {
   const md = [`# pageaudit — ${r.url}\n`];
   md.push(`- **Ran:** ${r.timestamp}`);
-  md.push(`- **Load:** ${fmtMs(r.loadMs)} • **TTFB:** ${fmtMs(r.vitals.ttfb)} • **FCP:** ${fmtMs(r.vitals.fcp)}\n`);
+  md.push(`- **Load:** ${fmtMs(r.loadMs)} • **TTFB:** ${fmtMs(r.vitals.ttfb)} • **FCP:** ${fmtMs(r.vitals.fcp)} • **LCP:** ${fmtMs(r.vitals.lcp)} • **CLS:** ${fmtCls(r.vitals.cls)}\n`);
   md.push(`## Heavy assets (by duration)\n`);
   md.push(`| Duration | Size | Type | URL |\n|---:|---:|---|---|`);
   for (const a of r.assets) md.push(`| ${fmtMs(a.duration)} | ${fmtBytes(a.size)} | ${a.type} | \`${a.url}\` |`);
@@ -230,7 +251,7 @@ code{font:12px monospace;word-break:break-all}
 </style></head><body>
 <h1>pageaudit — ${esc(r.url)}</h1>
 <p><strong>Ran:</strong> ${r.timestamp}<br>
-<strong>Load:</strong> ${fmtMs(r.loadMs)} • <strong>TTFB:</strong> ${fmtMs(r.vitals.ttfb)} • <strong>FCP:</strong> ${fmtMs(r.vitals.fcp)}</p>
+<strong>Load:</strong> ${fmtMs(r.loadMs)} • <strong>TTFB:</strong> ${fmtMs(r.vitals.ttfb)} • <strong>FCP:</strong> ${fmtMs(r.vitals.fcp)} • <strong>LCP:</strong> ${fmtMs(r.vitals.lcp)} • <strong>CLS:</strong> ${fmtCls(r.vitals.cls)}</p>
 <h2>Heavy assets (by duration)</h2>
 <table><tr><th>Duration</th><th>Size</th><th>Type</th><th>URL</th></tr>
 ${r.assets.map(a => `<tr><td class="num">${fmtMs(a.duration)}</td><td class="num">${fmtBytes(a.size)}</td><td>${esc(a.type)}</td><td><code>${esc(a.url)}</code></td></tr>`).join('')}
