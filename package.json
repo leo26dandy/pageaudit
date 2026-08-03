@@ -1,6 +1,6 @@
 {
   "name": "pageaudit",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Local one-shot page audit: heavy assets, 3rd party, tech stack",
   "license": "MIT",
   "type": "module",
@@ -15,8 +15,10 @@
   },
   "dependencies": {
     "playwright": "^1.48.0",
+    "simple-wappalyzer": "^1.1.103",
     "third-party-web": "^0.24.5",
     "tldts": "^7.4.10",
-    "wappalyzer": "^6.10.66"
+    "wappalyzer": "^7.0.3",
+    "wappalyzer-core": "^6.10.66"
   }
 }

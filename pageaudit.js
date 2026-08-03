@@ -5,9 +5,9 @@
 import { chromium } from 'playwright';
 import thirdPartyWeb from 'third-party-web';
 import { getDomain } from 'tldts';
-import Wappalyzer from 'wappalyzer';
+import Wappalyzer from 'wappalyzer-core';
 import { parseArgs } from 'node:util';
-import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -15,24 +15,12 @@ import { createRequire } from 'node:module';
 
 const { getEntity } = thirdPartyWeb;
 
-import Wappalyzer from 'wappalyzer';
 const require = createRequire(import.meta.url);
-const wappalyzerPath = join(require.resolve('wappalyzer'), '..');
-const { setTechnologies, setCategories, analyze, resolve } = Wappalyzer;
-
-const categories = JSON.parse(
-  readFileSync(join(wappalyzerPath, 'categories.json'), 'utf8')
-);
-setCategories(categories);
-
-const technologies = {};
-for (const file of readdirSync(join(wappalyzerPath, 'technologies'))) {
-  const data = JSON.parse(
-    readFileSync(join(wappalyzerPath, 'technologies', file), 'utf8')
-  );
-  Object.assign(technologies, data);
-}
-setTechnologies(technologies);
+const simpleWappalyzerPath = join(require.resolve('simple-wappalyzer'), '..');
+const categories = JSON.parse(readFileSync(join(simpleWappalyzerPath, 'categories.json'), 'utf8'));
+const technologies = JSON.parse(readFileSync(join(simpleWappalyzerPath, 'technologies.json'), 'utf8'));
+Wappalyzer.setCategories(categories);
+Wappalyzer.setTechnologies(technologies);
 
 const { values, positionals } = parseArgs({
   options: {
@@ -84,10 +72,32 @@ const snapshots = existsSync(snapshotFile)
   ? JSON.parse(readFileSync(snapshotFile, 'utf8'))
   : {};
 
-function detectTech(html, headers) {
+function detectTech(html, headers, scripts, meta, cookies, url) {
   try {
-    const detections = analyze({ html, headers });
-    return resolve(detections).map(t => t.name);
+    // Format headers: { key: [value] }
+    const formattedHeaders = {};
+    for (const [key, value] of Object.entries(headers)) {
+      formattedHeaders[key.toLowerCase()] = [value];
+    }
+    // Format meta: { key: [value] }
+    const formattedMeta = {};
+    for (const [key, value] of Object.entries(meta)) {
+      formattedMeta[key.toLowerCase()] = [value];
+    }
+    // Format cookies: parse into objects
+    const formattedCookies = cookies.map(c => {
+      const [name, ...rest] = c.split('=');
+      return { name, value: rest.join('=') };
+    });
+    const detections = Wappalyzer.analyze({
+      url,
+      html,
+      headers: formattedHeaders,
+      scripts,
+      meta: formattedMeta,
+      cookies: formattedCookies,
+    });
+    return Wappalyzer.resolve(detections).map(t => t.name);
   } catch {
     return [];
   }
@@ -100,10 +110,12 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
 
   // Capture headers for CORS/TAO diagnosis
   const responseHeaders = new Map();
+  const responseHeadersList = [];
   page.on('response', res => {
     const url = res.url();
     if (!url.startsWith('http')) return;
     responseHeaders.set(url, res.headers());
+    responseHeadersList.push({ url, headers: res.headers() });
   });
 
   const t0 = Date.now();
@@ -111,6 +123,17 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
   const loadMs = Date.now() - t0;
   const mainHeaders = await mainResponse.allHeaders();
   const html = await page.content();
+
+  // Collect Wappalyzer detection data
+  const techData = await page.evaluate(() => {
+    const scripts = Array.from(document.scripts).map(s => s.src).filter(Boolean);
+    const meta = {};
+    document.querySelectorAll('meta').forEach(m => {
+      const key = m.getAttribute('name') || m.getAttribute('property');
+      if (key) meta[key.toLowerCase()] = m.getAttribute('content');
+    });
+    return { scripts, meta };
+  });
 
   // Source of truth: PerformanceResourceTiming + PerformanceObserver — Chrome DevTools' own data.
   // Cross-origin without `Timing-Allow-Origin: *` reports transferSize=0 (CORS).
@@ -158,6 +181,11 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
   })));
 
   await browser.close();
+
+  // Extract cookies from set-cookie headers
+  const cookies = responseHeadersList
+    .flatMap(r => r.headers['set-cookie'] || [])
+    .map(c => c.split(';')[0]);
 
   const resources = perfResources
     .filter(r => r.url.startsWith('http') && r.duration > 0)
@@ -219,7 +247,7 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
     };
   }).sort((a, b) => b.totalDuration - a.totalDuration).slice(0, topN);
 
-  const tech = detectTech(html, mainHeaders);
+  const tech = detectTech(html, mainHeaders, techData.scripts, techData.meta, cookies, url);
 
   return { url, timestamp: new Date().toISOString(), loadMs, vitals, assetsByType, assets, thirdParty, tech };
 }
