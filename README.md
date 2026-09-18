@@ -1,5 +1,9 @@
 # pageaudit
 
+[![test](https://github.com/leo26dandy/pageaudit/actions/workflows/test.yml/badge.svg)](https://github.com/leo26dandy/pageaudit/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
+
 Local one-shot page audit CLI. See what's slow, who's tracking, what's under the hood - without waiting on PageSpeed Insights.
 
 ## What it shows
