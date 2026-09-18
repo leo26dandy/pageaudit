@@ -10,7 +10,8 @@ const NAV_LABELS = [
   ['request', 'request'], ['response', 'response'], ['domInteractive', 'dom interactive'],
   ['domContentLoaded', 'dom content loaded'], ['loadEvent', 'load event'],
 ];
-const elTag = el => `<${el.tag}${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.trim().split(/\s+/).join('.') : ''}>`;
+const elTag = el => el?.tag ? `<${el.tag}${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.trim().split(/\s+/).join('.') : ''}>` : null;
+const fmtSources = list => list.map(elTag).filter(Boolean).join(', ') || '—';
 export const fmtTime = iso => {
   try {
     return new Intl.DateTimeFormat('sv-SE', {
@@ -67,8 +68,7 @@ export function toTable(r, prev) {
     L.push(`\nCLS SHIFTS (top ${r.vitals.clsShifts.length})`);
     L.push('─'.repeat(90));
     for (const s of r.vitals.clsShifts) {
-      const srcs = s.sources.map(elTag).join(', ') || '—';
-      L.push(`  ${fmtCls(s.value)}  ${srcs}`);
+      L.push(`  ${fmtCls(s.value)}  ${fmtSources(s.sources)}`);
     }
   }
   L.push('\n3RD PARTY (by total duration)');
@@ -80,6 +80,7 @@ export function toTable(r, prev) {
   if (r.vitals.longTasks?.length) {
     L.push('\nLONG TASKS (top 5)');
     L.push('─'.repeat(90));
+    L.push('  (attribution: self = own script; same-origin-descendant = child frame same-origin; cross-origin-* = 3rd party)');
     for (const t of r.vitals.longTasks) {
       L.push(`  start ${fmtMs(t.startTime).padStart(7)}  dur ${fmtMs(t.duration).padStart(7)}  ${t.name}`);
     }
@@ -112,14 +113,14 @@ export function toMarkdown(r) {
   if (r.vitals.clsShifts?.length) {
     md.push(`\n## CLS shifts (top ${r.vitals.clsShifts.length})\n`);
     md.push(`| Value | Sources |\n|---:|---|`);
-    for (const s of r.vitals.clsShifts) md.push(`| ${fmtCls(s.value)} | ${s.sources.map(elTag).join(', ') || '—'} |`);
+    for (const s of r.vitals.clsShifts) md.push(`| ${fmtCls(s.value)} | ${fmtSources(s.sources)} |`);
   }
   md.push(`\n## 3rd party (by total duration)\n`);
   md.push(`| Total | Requests | Category | Host | Entity |\n|---:|---:|---|---|---|`);
   for (const t of r.thirdParty) md.push(`| ${fmtMs(t.totalDuration)} | ${t.requests} | ${t.category} | \`${t.host}\` | ${t.entity} |`);
   if (r.vitals.longTasks?.length) {
     md.push(`\n## Long tasks (top 5)\n`);
-    md.push(`| Start | Duration | Name |\n|---:|---:|---|`);
+    md.push(`| Start | Duration | Attribution |\n|---:|---:|---|`);
     for (const t of r.vitals.longTasks) md.push(`| ${fmtMs(t.startTime)} | ${fmtMs(t.duration)} | ${t.name} |`);
   }
   md.push(`\n## Tech stack\n`);
@@ -327,7 +328,7 @@ export function toHTML(r) {
         <tbody>
           ${r.vitals.clsShifts.map(s => `<tr>
             <td class="num">${fmtCls(s.value)}</td>
-            <td class="mono">${esc(s.sources.map(elTag).join(', ') || '—')}</td>
+            <td class="mono">${esc(fmtSources(s.sources))}</td>
           </tr>`).join('')}
         </tbody>
       </table></div>
@@ -358,7 +359,7 @@ export function toHTML(r) {
         <span class="count">top ${r.vitals.longTasks.length}</span>
       </div>
       <div class="card card-scroll"><table>
-        <thead><tr><th class="num">Start</th><th class="num">Duration</th><th>Name</th></tr></thead>
+        <thead><tr><th class="num">Start</th><th class="num">Duration</th><th>Attribution</th></tr></thead>
         <tbody>
           ${r.vitals.longTasks.map(t => `<tr>
             <td class="num">${fmtMs(t.startTime)}</td>
