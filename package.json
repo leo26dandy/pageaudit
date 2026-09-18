@@ -7,6 +7,14 @@
   "bin": {
     "pageaudit": "./pageaudit.js"
   },
+  "files": [
+    "pageaudit.js",
+    "helpers.js",
+    "format.js",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "engines": {
     "node": ">=20"
   },

@@ -6,6 +6,8 @@
 
 Local one-shot page audit CLI. See what's slow, who's tracking, what's under the hood - without waiting on PageSpeed Insights.
 
+![Sample HTML report](docs/report.png)
+
 ## What it shows
 
 - **By type summary** - all assets grouped by kind (img, script, font, css, video, ...) with count, total size, average + total duration.
