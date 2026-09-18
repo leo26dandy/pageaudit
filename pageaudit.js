@@ -249,6 +249,7 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
     encodedBodySize: e.encodedBodySize,
     initiatorType: e.initiatorType,
     protocol: e.nextHopProtocol || null,
+    startTime: e.startTime,
   })));
 
   await browser.close();
@@ -272,6 +273,7 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
         contentType: h['content-type'] || null,
         protocol: r.protocol || null,
         encoding: h['content-encoding'] || null,
+        startTime: Math.round(r.startTime),
       };
     });
 

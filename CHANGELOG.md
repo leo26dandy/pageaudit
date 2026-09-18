@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- HTML report: vitals cards color-coded green/amber/red against Core Web Vitals thresholds (FCP, LCP, CLS, TBT, TTFB).
+- HTML report: timeline marker bar (inline SVG) showing FCP, LCP, DOM content loaded, onload, and fully-loaded.
+- HTML report: waterfall chart (inline SVG) of up to 30 requests by start time, colored by asset type, with lifecycle markers overlaid.
+- HTML report: assets-by-type segmented bar (requests + duration) with color-key legend.
+- Per-asset `startTime` (ms since navigation start) — powers the waterfall chart; terminal/Markdown output unchanged.
+
 ## [0.5.0] — 2026-09-18
 
 ### Added

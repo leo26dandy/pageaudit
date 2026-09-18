@@ -128,21 +128,141 @@ export function toMarkdown(r) {
   return md.join('\n');
 }
 
-export function toHTML(r) {
-  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const vitalCard = (label, value) => `
-        <div class="stat-card">
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Core Web Vitals thresholds: [good ceiling, needs-improvement ceiling]. Above both = bad.
+const VITAL_THRESHOLDS = {
+  FCP: [1800, 3000], LCP: [2500, 4000], CLS: [0.1, 0.25], TBT: [200, 600], TTFB: [800, 1800],
+};
+function vitalTier(label, value) {
+  const t = VITAL_THRESHOLDS[label];
+  if (!t || value == null || Number.isNaN(value)) return 'neutral';
+  const [good, warn] = t;
+  return value <= good ? 'good' : value <= warn ? 'warn' : 'bad';
+}
+function vitalCard(label, value, tier) {
+  const cls = tier && tier !== 'neutral' ? ` stat-${tier}` : '';
+  return `
+        <div class="stat-card${cls}">
           <div class="stat-label">${esc(label)}</div>
           <div class="stat-value">${esc(value)}</div>
         </div>`;
+}
+
+const TYPE_COLOR = { img: 'var(--type-img)', script: 'var(--type-script)', css: 'var(--type-css)', font: 'var(--type-font)', doc: 'var(--type-doc)' };
+const typeColor = type => TYPE_COLOR[type] || 'var(--type-other)';
+
+// last 40 chars of the path — enough to identify the file without the full URL.
+function shortLabel(url) {
+  let s;
+  try { s = new URL(url).pathname || url; } catch { s = url; }
+  return s.length > 40 ? '…' + s.slice(-39) : s;
+}
+
+function timelineMarkers(vitals) {
+  return [
+    ['FCP', vitals.fcp, 'var(--warn)'],
+    ['LCP', vitals.lcp, 'var(--bad)'],
+    ['DCL', vitals.nav?.domContentLoaded, 'var(--ink-mute)'],
+    ['Onload', vitals.nav?.loadEvent, 'var(--ink-mute)'],
+    ['Fully loaded', vitals.fullyLoaded, 'var(--ink-mute)'],
+  ].filter(([, v]) => typeof v === 'number' && !Number.isNaN(v));
+}
+
+// horizontal axis 0..max with a vertical line + label per lifecycle marker.
+function timelineSection(vitals) {
+  const markers = timelineMarkers(vitals);
+  if (!markers.length) return '';
+  const max = Math.max(...markers.map(([, v]) => v), 1);
+  const sx = v => Math.min(1000, Math.max(0, (v / max) * 1000));
+  // stagger label rows when adjacent markers land close together — no measurement pass, just a distance check.
+  const sorted = [...markers].sort((a, b) => a[1] - b[1]);
+  let lastX = -Infinity, toggle = 0;
+  const rows = sorted.map(([name, v, color]) => {
+    const px = sx(v);
+    toggle = (px - lastX < 90) ? (toggle ? 0 : 1) : 0;
+    lastX = px;
+    return { name, v, color, px, labelY: toggle ? 78 : 66 };
+  });
+  const lines = rows.map(m => `<line x1="${m.px.toFixed(1)}" y1="15" x2="${m.px.toFixed(1)}" y2="55" stroke="${m.color}" stroke-width="2"/>`).join('');
+  const labels = rows.map(m => `<text x="${m.px.toFixed(1)}" y="${m.labelY}" font-size="11" fill="${m.color}" text-anchor="middle">${esc(m.name)} ${Math.round(m.v)}ms</text>`).join('');
+  return `<section>
+      <div class="h2-row"><h2>Timeline</h2></div>
+      <div class="card" style="padding:16px 20px;">
+        <svg viewBox="0 0 1000 90" preserveAspectRatio="xMinYMid meet" width="100%" height="90" role="img" aria-label="Load timeline">
+          <line x1="0" y1="35" x2="1000" y2="35" stroke="var(--primary)" stroke-width="2"/>
+          ${lines}${labels}
+        </svg>
+      </div>
+    </section>`;
+}
+
+// one bar per request, earliest start first, overlaid with the same lifecycle markers.
+function waterfallSection(assets, vitals) {
+  if (assets.length < 3 || !assets.every(a => typeof a.startTime === 'number')) return '';
+  const rows = [...assets].sort((a, b) => a.startTime - b.startTime).slice(0, 30);
+  const markers = timelineMarkers(vitals);
+  const maxEnd = Math.max(...rows.map(a => a.startTime + a.duration), ...markers.map(([, v]) => v), 1);
+  const labelW = 260, rightPad = 50, chartX0 = labelW, chartW = 1000 - labelW - rightPad;
+  const rowH = 20, headerH = 20, h = headerH + rows.length * rowH + 10;
+  const sx = t => chartX0 + (t / maxEnd) * chartW;
+  const bars = rows.map((a, i) => {
+    const y = headerH + i * rowH;
+    const bx = sx(a.startTime);
+    const bw = Math.max(2, (a.duration / maxEnd) * chartW);
+    const durInside = bw > 30;
+    return `<g>
+      <text x="4" y="${y + 14}" font-size="9" fill="var(--ink-mute)">${esc(shortLabel(a.url))}</text>
+      <rect x="${bx.toFixed(1)}" y="${y + 3}" width="${bw.toFixed(1)}" height="14" rx="2" fill="${typeColor(a.type)}"/>
+      <text x="${(durInside ? bx + bw - 4 : bx + bw + 4).toFixed(1)}" y="${y + 14}" font-size="9" text-anchor="${durInside ? 'end' : 'start'}" fill="${durInside ? '#fff' : 'var(--ink-mute)'}">${esc(fmtMs(a.duration))}</text>
+    </g>`;
+  }).join('');
+  const markerLines = markers.map(([, v, color]) => `<line x1="${sx(v).toFixed(1)}" y1="0" x2="${sx(v).toFixed(1)}" y2="${h}" stroke="${color}" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>`).join('');
+  return `<section>
+      <div class="h2-row"><h2>Waterfall</h2><span class="count">${rows.length} requests, earliest first</span></div>
+      <div class="card" style="padding:16px 20px;">
+        <svg viewBox="0 0 1000 ${h}" preserveAspectRatio="xMinYMid meet" width="100%" height="${Math.min(h, 640)}" role="img" aria-label="Request waterfall">
+          ${markerLines}${bars}
+        </svg>
+      </div>
+    </section>`;
+}
+
+// two segmented bars (request count, total duration) by asset type + a shared legend.
+function segBar(items, valueFn, labelFn) {
+  const total = items.reduce((s, t) => s + valueFn(t), 0) || 1;
+  return items.map(t => {
+    const v = valueFn(t);
+    if (!v) return '';
+    const pct = (v / total) * 100;
+    const showLabel = pct > 8;
+    return `<div class="segbar-seg" style="width:${pct.toFixed(2)}%; background:${typeColor(t.type)};" title="${esc(t.type)}: ${esc(labelFn(t))}">${showLabel ? esc(shortType(t.type) + ' ' + labelFn(t)) : ''}</div>`;
+  }).join('');
+}
+function assetsByTypeSection(assetsByType) {
+  if (!assetsByType.length) return '';
+  const legend = `<div class="segbar-legend">${assetsByType.map(t => `<span class="legend-item"><span class="legend-swatch" style="background:${typeColor(t.type)};"></span>${esc(shortType(t.type))} (${t.count})</span>`).join('')}</div>`;
+  return `
+      <div class="segbar-row">
+        <div class="segbar-label">Requests by type</div>
+        <div class="segbar">${segBar(assetsByType, t => t.count, t => String(t.count))}</div>
+      </div>
+      <div class="segbar-row">
+        <div class="segbar-label">Duration by type</div>
+        <div class="segbar">${segBar(assetsByType, t => t.totalDuration, t => fmtMs(t.totalDuration))}</div>
+      </div>
+      ${legend}`;
+}
+
+export function toHTML(r) {
   const vitals = [
-    ['Load', fmtMs(r.loadMs)],
-    ['TTFB', fmtMs(r.vitals.ttfb)],
-    ['FCP',  fmtMs(r.vitals.fcp)],
-    ['LCP',  fmtMs(r.vitals.lcp)],
-    ['CLS',  fmtCls(r.vitals.cls)],
-    ['TBT',  fmtMs(r.vitals.tbt)],
-    ['Fully loaded', fmtMs(r.vitals.fullyLoaded)],
+    ['Load', fmtMs(r.loadMs), null],
+    ['TTFB', fmtMs(r.vitals.ttfb), r.vitals.ttfb],
+    ['FCP',  fmtMs(r.vitals.fcp), r.vitals.fcp],
+    ['LCP',  fmtMs(r.vitals.lcp), r.vitals.lcp],
+    ['CLS',  fmtCls(r.vitals.cls), r.vitals.cls],
+    ['TBT',  fmtMs(r.vitals.tbt), r.vitals.tbt],
+    ['Fully loaded', fmtMs(r.vitals.fullyLoaded), null],
   ];
   return `<!doctype html>
 <html lang="en">
@@ -172,6 +292,15 @@ export function toHTML(r) {
     --rounded-lg: 12px;
     --rounded-xl: 16px;
     --rounded-pill: 90px;
+    --good: #28b936;
+    --warn: #eea63a;
+    --bad: #c02026;
+    --type-img: #1264a3;
+    --type-script: #c02026;
+    --type-css: #7b4b94;
+    --type-font: #d97706;
+    --type-doc: #3d3d3d;
+    --type-other: #9a9a9a;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -200,6 +329,20 @@ export function toHTML(r) {
   .stat-card { background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--rounded-xl); padding: 20px 24px; }
   .stat-label { font-size: 12px; font-weight: 700; line-height: 1; letter-spacing: 0.96px; text-transform: uppercase; color: var(--ink-mute); }
   .stat-value { font-size: 32px; font-weight: 700; line-height: 1.12; letter-spacing: -0.256px; color: var(--primary); margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .stat-good { border-left: 4px solid var(--good); }
+  .stat-warn { border-left: 4px solid var(--warn); }
+  .stat-bad { border-left: 4px solid var(--bad); }
+  .stat-good .stat-value { color: var(--good); }
+  .stat-warn .stat-value { color: var(--warn); }
+  .stat-bad .stat-value { color: var(--bad); }
+
+  .segbar-row { margin-bottom: 8px; }
+  .segbar-label { font-size: 12px; color: var(--ink-mute); margin-bottom: 4px; }
+  .segbar { display: flex; width: 100%; height: 32px; border-radius: var(--rounded-md); overflow: hidden; }
+  .segbar-seg { display: flex; align-items: center; justify-content: center; font-size: 11px; color: #fff; font-weight: 600; white-space: nowrap; overflow: hidden; }
+  .segbar-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 24px; font-size: 12px; color: var(--ink-mute); }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 
   main { padding: 48px 24px 64px; }
   section { margin-bottom: 40px; }
@@ -255,12 +398,14 @@ export function toHTML(r) {
 
 <section class="vitals-band">
   <div class="vitals-grid">
-    ${vitals.map(([label, value]) => vitalCard(label, value)).join('')}
+    ${vitals.map(([label, value, raw]) => vitalCard(label, value, vitalTier(label, raw))).join('')}
   </div>
 </section>
 
 <main>
   <div class="container-inner">
+
+    ${timelineSection(r.vitals)}
 
     ${r.vitals.nav ? `<section>
       <div class="h2-row">
@@ -283,6 +428,7 @@ export function toHTML(r) {
         <h2>Assets by type</h2>
         <span class="count">${r.assetsByType.length} types</span>
       </div>
+      ${assetsByTypeSection(r.assetsByType)}
       <div class="card card-scroll"><table>
         <thead><tr><th>Type</th><th class="num">Files</th><th class="num">Total size</th><th class="num">Avg</th><th class="num">Total</th></tr></thead>
         <tbody>
@@ -317,6 +463,8 @@ export function toHTML(r) {
       </table></div>
       ${r.vitals.lcpElement ? `<p class="count" style="margin-top:12px;">LCP element: <code class="mono">${esc(elTag(r.vitals.lcpElement))}</code>${r.vitals.lcpElement.src ? ` src=<code class="mono">${esc(r.vitals.lcpElement.src)}</code>` : ''}</p>` : ''}
     </section>
+
+    ${waterfallSection(r.assets, r.vitals)}
 
     ${r.vitals.clsShifts?.length ? `<section>
       <div class="h2-row">

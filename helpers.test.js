@@ -61,3 +61,19 @@ test('renderers stay backward compatible without v0.5 vitals fields, and render 
   assert.match(toMarkdown(withNav), /Timing breakdown/);
   assert.match(toHTML(withNav), /Timing breakdown/);
 });
+
+test('toHTML renders SVG visualizations when startTime+vitals present, and skips cleanly without them', () => {
+  const noStart = {url: 'https://site.test/', timestamp: '2026-01-01T00:00:00.000Z', loadMs: 1, vitals: {ttfb: null, fcp: null, lcp: null, cls: null}, assetsByType: [{type: 'script', count: 1, totalSize: 10, totalDuration: 5, avgDuration: 5}], assets: [{url: 'https://site.test/a.js', duration: 5, size: 10, type: 'script', cors: false}], thirdParty: [], tech: []};
+  assert.doesNotThrow(() => toHTML(noStart));
+  assert.equal(toHTML(noStart).includes('<svg'), false);
+
+  const withStart = {...noStart, vitals: {...noStart.vitals, lcp: 900, fullyLoaded: 1200, nav: {domContentLoaded: 600, loadEvent: 1000}}, assets: [
+    {url: 'https://site.test/a.js', duration: 100, size: 10, type: 'script', cors: false, startTime: 0},
+    {url: 'https://site.test/b.css', duration: 50, size: 5, type: 'css', cors: false, startTime: 50},
+    {url: 'https://site.test/c.png', duration: 200, size: 500, type: 'img', cors: false, startTime: 100},
+  ]};
+  const html = toHTML(withStart);
+  assert.match(html, /<svg/);
+  assert.match(html, /Waterfall/);
+  assert.match(html, /Timeline/);
+});

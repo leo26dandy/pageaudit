@@ -17,6 +17,13 @@ Local one-shot page audit CLI. See what's slow, who's tracking, what's under the
 - **Diff vs previous run** - instant regression check for the same URL.
 - **Human-readable timestamp** in your local timezone; ISO kept in JSON for machine parsing.
 
+HTML report only, inline SVG, no added dependencies:
+
+- **Vitals color coding** - each stat card tints green/amber/red against Google's Core Web Vitals thresholds (FCP, LCP, CLS, TBT, TTFB); Load and Fully loaded stay neutral (no official threshold).
+- **Timeline marker bar** - horizontal axis showing FCP, LCP, DOM content loaded, onload, and fully-loaded as one glance.
+- **Waterfall chart** - up to 30 requests as horizontal bars ordered by start time, colored by asset type, with the same lifecycle markers overlaid.
+- **Assets-by-type segmented bar** - two stacked bars (request count, total duration) broken down by asset type, with a color-key legend.
+
 Powered by real Chromium (Playwright), reading directly from the browser's `PerformanceResourceTiming` and `PerformanceObserver` APIs - the same source Chrome DevTools uses.
 
 ## Requirements
