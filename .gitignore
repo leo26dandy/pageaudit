@@ -9,6 +9,8 @@ reports/
 # Generated audit reports
 /*.html
 /report.md
+docs/*.html
+docs/*.md
 
 # Local snapshots / third-party artifacts / editor state
 snapshots.json
