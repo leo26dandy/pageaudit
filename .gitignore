@@ -5,3 +5,17 @@ Thumbs.db
 .pageaudit-cache/
 /tmp/
 reports/
+
+# Generated audit reports
+/*.html
+/report.md
+
+# Local snapshots / third-party artifacts / editor state
+snapshots.json
+*.pdf
+.claude/
+CLAUDE.md
+RTK.md
+.cursorrules
+.aider*
+.github/copilot-*
