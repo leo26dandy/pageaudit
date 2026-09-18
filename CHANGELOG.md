@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] — 2026-09-18
 
 ### Added
 - HTML report: vitals cards color-coded green/amber/red against Core Web Vitals thresholds (FCP, LCP, CLS, TBT, TTFB).
@@ -87,6 +87,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Output formats: terminal table (default), `--json`, `--html`, `--md`, `--share` (uploads HTML as a GitHub Gist via the `gh` CLI).
 - `--timeout <ms>` for slow origins.
 
+[0.6.0]: https://github.com/leo26dandy/pageaudit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/leo26dandy/pageaudit/compare/4cd1ef0...v0.5.0
 [0.4.0]: https://github.com/leo26dandy/pageaudit/compare/3632fb8...4cd1ef0
 [0.3.0]: https://github.com/leo26dandy/pageaudit/compare/402f769...3632fb8
