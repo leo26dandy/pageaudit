@@ -5,6 +5,25 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-09-22
+
+### Added
+- Findings panel: top 5 issues ranked by severity (high/med/low) with metric pills (LCP/FCP/CLS/TBT), quantified savings (bytes and/or ms), and a one-line detail. Synthesised from the shipped audits, no extra browser probing. Rendered in terminal, Markdown, and HTML.
+- Oversized images check: `page.evaluate` walks `<img>`, flags any where `naturalWidth / (renderedWidth * devicePixelRatio) > 2`. Attaches byte size from Resource Timing when known and estimates savings as `bytes * (1 - 1 / ratio²)`. Top 10 sorted by savings then ratio.
+- Render-blocking resources check: probes `link[rel~="stylesheet"]` (skips `media="print"`) and `document.head script[src]` (skips `async`, `defer`, `type="module"`). Joins duration and bytes from Resource Timing.
+- Cache TTL check: parses `Cache-Control` on static assets (script, css, img, font). Flags `missing`, `no-store`, `no-cache`, or `short` (`max-age` under 7 days). Top 15 by bytes.
+- Redirect chain: walks `mainResponse.request().redirectedFrom()` backwards and lists each hop with its status. Suppressed for zero-hop navigations.
+- DOM stats: total elements, max depth (with deepest element), and max children per parent (with widest element).
+- Images missing `width`/`height` check: flags visible `<img>` tags without both attributes (CLS risk).
+- HTML report redesign: MI red palette (`#c02026`) replaces the aubergine/cream chrome; system font stack drops the Google Fonts dependency; data-dense tables replace boxed stat cards and pill badges; `pageaudit` self-brandmark replaces the earlier MI wordmark.
+
+### Changed
+- HTML footer trimmed to `MIT · <repo link>`.
+- All new sections gate on their own emptiness so a clean site produces a short report.
+
+### Fixed
+- Removed unused CSS custom properties and inline WHAT-comments left over from the earlier design pass.
+
 ## [0.6.0] — 2026-09-18
 
 ### Added

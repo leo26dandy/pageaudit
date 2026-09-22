@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { inferType, resourceSize, hasRegression } from './helpers.js';
+import { inferType, resourceSize, hasRegression, buildFindings } from './helpers.js';
 import { toTable, toMarkdown, toHTML, fmtMs } from './format.js';
 
 const { getEntity } = thirdPartyWeb;
@@ -126,6 +126,14 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
   const finalUrl = mainResponse?.url() || url;
   const mainHeaders = await mainResponse.allHeaders();
   const html = await page.content();
+
+  const redirectChain = [];
+  let redirReq = mainResponse.request();
+  while (redirReq) {
+    const res = await redirReq.response();
+    redirectChain.unshift({ url: redirReq.url(), status: res?.status() ?? null });
+    redirReq = redirReq.redirectedFrom();
+  }
 
   // Collect Wappalyzer detection data
   const techData = await page.evaluate(() => {
@@ -252,6 +260,74 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
     startTime: e.startTime,
   })));
 
+  const domStats = await page.evaluate(() => {
+    const fmt = el => el ? `<${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : ''}>` : null;
+    let maxDepth = 0, deepest = null, maxChildren = 0, widest = null;
+    const walk = (el, depth) => {
+      if (depth > maxDepth) { maxDepth = depth; deepest = el; }
+      const kids = el.children;
+      if (kids.length > maxChildren) { maxChildren = kids.length; widest = el; }
+      for (const k of kids) walk(k, depth + 1);
+    };
+    walk(document.documentElement, 1);
+    return {
+      total: document.getElementsByTagName('*').length,
+      maxDepth,
+      deepestElement: fmt(deepest),
+      maxChildren,
+      widestElement: fmt(widest),
+    };
+  });
+
+  const renderBlockingRaw = await page.evaluate(() => {
+    const css = [];
+    document.querySelectorAll('link[rel~="stylesheet"]').forEach(l => {
+      if (!l.href) return;
+      const media = (l.media || '').trim().toLowerCase();
+      if (media === 'print') return;
+      css.push({ url: l.href, media: media || 'all' });
+    });
+    const js = [];
+    document.head.querySelectorAll('script[src]').forEach(s => {
+      if (s.async || s.defer) return;
+      if ((s.type || '').toLowerCase() === 'module') return;
+      js.push({ url: s.src });
+    });
+    return { css, js };
+  });
+
+  const imgAudit = await page.evaluate(() => {
+    const dpr = window.devicePixelRatio || 1;
+    const oversized = [];
+    const missingDims = [];
+    document.querySelectorAll('img').forEach(img => {
+      const rect = img.getBoundingClientRect();
+      const src = img.currentSrc || img.src || '';
+      if (!src || src.startsWith('data:')) return;
+      if (!rect.width) return;
+      if (img.naturalWidth) {
+        oversized.push({
+          src,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          renderedWidth: rect.width,
+          renderedHeight: rect.height,
+          dpr,
+        });
+      }
+      if (!img.hasAttribute('width') || !img.hasAttribute('height')) {
+        missingDims.push({
+          src,
+          renderedWidth: Math.round(rect.width),
+          renderedHeight: Math.round(rect.height),
+          hasWidth: img.hasAttribute('width'),
+          hasHeight: img.hasAttribute('height'),
+        });
+      }
+    });
+    return { oversized, missingDims };
+  });
+
   await browser.close();
 
   // Extract cookies from set-cookie headers
@@ -323,7 +399,72 @@ async function audit(url, { topN = 15, filterTypes = null } = {}) {
 
   const tech = detectTech(html, mainHeaders, techData.scripts, techData.meta, cookies, url);
 
-  return { url, timestamp: new Date().toISOString(), loadMs, vitals, assetsByType, assets, thirdParty, tech };
+  const STATIC_TYPES = new Set(['script', 'css', 'img', 'font']);
+  const CACHE_MIN = 7 * 86400;
+  const parseMaxAge = cc => {
+    const m = /(?:^|,)\s*max-age\s*=\s*(\d+)/i.exec(cc || '');
+    return m ? parseInt(m[1], 10) : null;
+  };
+  const cacheTtl = resources
+    .filter(r => STATIC_TYPES.has(r.type))
+    .map(r => {
+      const cc = (responseHeaders.get(r.url) || {})['cache-control'] || '';
+      const lc = cc.toLowerCase();
+      const maxAge = parseMaxAge(cc);
+      let reason = null;
+      if (!cc) reason = 'missing';
+      else if (/\bno-store\b/.test(lc)) reason = 'no-store';
+      else if (/\bno-cache\b/.test(lc)) reason = 'no-cache';
+      else if (maxAge != null && maxAge < CACHE_MIN) reason = 'short';
+      if (!reason) return null;
+      return { url: r.url, type: r.type, bytes: r.size, duration: r.duration, cacheControl: cc || null, maxAge, reason };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (b.bytes || 0) - (a.bytes || 0))
+    .slice(0, 15);
+
+  const resourceByUrl = new Map(resources.map(r => [r.url, r]));
+  const enrich = e => {
+    const res = resourceByUrl.get(e.url);
+    return { ...e, bytes: res?.size ?? null, duration: res?.duration ?? null };
+  };
+  const renderBlocking = {
+    css: renderBlockingRaw.css.map(enrich).sort((a, b) => (b.duration || 0) - (a.duration || 0)),
+    js: renderBlockingRaw.js.map(enrich).sort((a, b) => (b.duration || 0) - (a.duration || 0)),
+  };
+
+  const oversizedImages = imgAudit.oversized
+    .map(i => {
+      const effRendered = Math.max(1, Math.round(i.renderedWidth * i.dpr));
+      const ratio = i.naturalWidth / effRendered;
+      const res = resourceByUrl.get(i.src);
+      const bytes = res?.size || null;
+      const savings = (bytes && ratio > 1) ? Math.round(bytes * (1 - 1 / (ratio * ratio))) : null;
+      return {
+        src: i.src,
+        naturalWidth: i.naturalWidth,
+        naturalHeight: i.naturalHeight,
+        renderedWidth: Math.round(i.renderedWidth),
+        renderedHeight: Math.round(i.renderedHeight),
+        dpr: i.dpr,
+        ratio: Math.round(ratio * 100) / 100,
+        bytes,
+        savings,
+      };
+    })
+    .filter(i => i.ratio > 2)
+    .sort((a, b) => (b.savings || 0) - (a.savings || 0) || b.ratio - a.ratio)
+    .slice(0, 10);
+
+  const redirects = redirectChain.length > 1
+    ? { chain: redirectChain, totalMs: vitals.nav?.redirect ?? null }
+    : null;
+
+  const imagesMissingDims = imgAudit.missingDims.slice(0, 15);
+
+  const report = { url, timestamp: new Date().toISOString(), loadMs, vitals, assetsByType, assets, thirdParty, tech, oversizedImages, renderBlocking, cacheTtl, redirects, domStats, imagesMissingDims };
+  report.findings = buildFindings(report);
+  return report;
 }
 
 

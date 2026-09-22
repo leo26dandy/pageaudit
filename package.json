@@ -1,6 +1,6 @@
 {
   "name": "pageaudit",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Local one-shot page audit: heavy assets, 3rd party, tech stack",
   "license": "MIT",
   "type": "module",
